@@ -147,6 +147,7 @@ def validate_password(password):
     return True, ""
 
 def adjust_ticker(ticker, exchange):
+    """Adjust ticker format based on the selected exchange."""
     ticker = ticker.upper().strip()
     if exchange == "US" or exchange == "NASDAQ":
         return ticker
@@ -163,9 +164,9 @@ def adjust_ticker(ticker, exchange):
     elif exchange == "TSE":
         return f"{ticker}.T"
     elif exchange == "LSE":
-        return ticker
+        return ticker  # LSE uses base ticker
     elif exchange == "EURONEXT":
-        return f"{ticker}.PA"
+        return f"{ticker}.PA"  # Paris as default, adjust per market
     elif exchange == "TSX":
         return f"{ticker}.TO"
     elif exchange == "ASX":
@@ -187,6 +188,7 @@ def adjust_ticker(ticker, exchange):
     return ticker
 
 def reverse_adjust_ticker(ticker, exchange):
+    """Remove exchange suffix to get the base ticker for storage or display."""
     if exchange == "NSE" and ticker.endswith(".NS"):
         return ticker[:-3]
     elif exchange == "BSE" and ticker.endswith(".BO"):
@@ -237,9 +239,11 @@ def fetch_news(ticker, exchange):
             logger.error("News API key not found.")
             return []
 
+        # Dynamically fetch the company name
         company_name = get_company_name(ticker)
         logger.info(f"Resolved company name for {ticker}: {company_name}")
 
+        # Construct the query
         query = f"{company_name} India stock" if exchange in ["NSE", "BSE"] else company_name
         url = f"https://newsapi.org/v2/everything?q={query}&apiKey={api_key}&language=en&sortBy=publishedAt&pageSize=5"
         
@@ -270,6 +274,7 @@ def fetch_news(ticker, exchange):
         return []
 
 def ticker_for_alpha_vantage(ticker, exchange):
+    """Format ticker for Alpha Vantage API."""
     if exchange == "US" or exchange == "NASDAQ":
         return ticker
     elif exchange == "NSE":
@@ -287,7 +292,7 @@ def ticker_for_alpha_vantage(ticker, exchange):
     elif exchange == "LSE":
         return f"LON:{ticker}"
     elif exchange == "EURONEXT":
-        return f"PAR:{ticker}"
+        return f"PAR:{ticker}"  # Paris as default
     elif exchange == "TSX":
         return f"TOR:{ticker}"
     elif exchange == "ASX":
@@ -309,7 +314,7 @@ def ticker_for_alpha_vantage(ticker, exchange):
     return ticker
 
 def send_verification_email(email, token):
-    app_url = os.getenv("APP_URL", "https://your-app-name.streamlit.app")
+    app_url = os.getenv("APP_URL", "http://localhost:8501")
     verification_link = f"{app_url}/?token={token}"
     sender_email = os.getenv("SMTP_USER")
     sender_password = os.getenv("SMTP_PASS")
@@ -532,19 +537,44 @@ def calculate_rsi(data, periods=14):
 def prepare_features(df):
     """Add technical indicators as features for the prediction model."""
     df = df.copy()
+    # Moving Averages
     df['MA50'] = df['Close'].rolling(window=50).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
+    # RSI
     df['RSI'] = calculate_rsi(df['Close'])
+    # Volume
     df['Volume'] = df['Volume']
+    # Fill NaN values
     df = df.fillna(method='ffill').fillna(method='bfill')
     return df[['Close', 'MA50', 'MA200', 'RSI', 'Volume']]
 
 def create_sequences(data, lookback):
+    """Create sequences for LSTM training."""
     X, y = [], []
     for i in range(lookback, len(data)):
         X.append(data[i-lookback:i])
         y.append(data[i, 0])  # Predict the 'Close' price
     return np.array(X), np.array(y)
+
+def prepare_features(df):
+    logger.info("Preparing features for DataFrame...")
+    df = df.copy()
+    df['MA50'] = df['Close'].rolling(window=50).mean()
+    df['RSI'] = calculate_rsi(df['Close'])
+    df['Volume'] = df['Volume']
+    df = df.dropna()
+    logger.info(f"Features prepared, DataFrame size after dropna: {len(df)}")
+    return df[['Close', 'MA50', 'RSI', 'Volume']]
+
+def create_sequences(data, lookback):
+    logger.info("Creating sequences for LSTM...")
+    X, y = [], []
+    for i in range(lookback, len(data)):
+        X.append(data[i-lookback:i])
+        y.append(data[i, 0])  # Predict the 'Close' price
+    X, y = np.array(X), np.array(y)
+    logger.info(f"Sequences created: X shape={X.shape}, y shape={y.shape}")
+    return X, y
 
 def predict_future_prices(df, days=30, lookback=30):
     logger.info(f"Starting prediction for {days} days with lookback {lookback}")
@@ -555,20 +585,24 @@ def predict_future_prices(df, days=30, lookback=30):
         return [], []
     
     try:
+        # Prepare features
         logger.info("Preparing features...")
         feature_df = prepare_features(df)
         data = feature_df.values
         logger.info(f"Feature data shape: {data.shape}")
         
+        # Normalize the data
         logger.info("Normalizing data...")
         scaler = MinMaxScaler()
         scaled_data = scaler.fit_transform(data)
         logger.info(f"Scaled data shape: {scaled_data.shape}")
         
+        # Create sequences for training
         logger.info("Creating sequences...")
         X, y = create_sequences(scaled_data, lookback)
         logger.info(f"Sequence shapes: X={X.shape}, y={y.shape}")
         
+        # Split into train and test (90% train, 10% test)
         train_size = int(len(X) * 0.9)
         if train_size == 0:
             logger.warning("Not enough sequences for training after splitting.")
@@ -577,6 +611,7 @@ def predict_future_prices(df, days=30, lookback=30):
         y_train, y_test = y[:train_size], y[train_size:]
         logger.info(f"Train/test split: X_train={X_train.shape}, X_test={X_test.shape}")
         
+        # Build LSTM model
         logger.info("Building LSTM model...")
         model = Sequential([
             LSTM(32, return_sequences=True, input_shape=(lookback, X.shape[2])),
@@ -590,10 +625,12 @@ def predict_future_prices(df, days=30, lookback=30):
         logger.info("Compiling model...")
         model.compile(optimizer='adam', loss='mse')
         
+        # Train the model
         logger.info("Training model...")
         model.fit(X_train, y_train, epochs=3, batch_size=16, verbose=0, validation_data=(X_test, y_test))
         logger.info("Model training completed.")
         
+        # Prepare the last sequence for prediction
         last_sequence = scaled_data[-lookback:]
         future_preds = []
         
@@ -603,18 +640,22 @@ def predict_future_prices(df, days=30, lookback=30):
             current_sequence_reshaped = current_sequence.reshape((1, lookback, current_sequence.shape[1]))
             next_pred = model.predict(current_sequence_reshaped, verbose=0)
             future_preds.append(next_pred[0, 0])
+            
+            # Create a new row with the predicted close price and approximate other features
             next_row = np.zeros((1, current_sequence.shape[1]))
             next_row[0, 0] = next_pred[0, 0]
             next_row[0, 1:] = current_sequence[-1, 1:]
             current_sequence = np.vstack((current_sequence[1:], next_row))
         logger.info(f"Generated {len(future_preds)} future predictions.")
         
+        # Inverse transform the predictions
         logger.info("Inverse transforming predictions...")
         future_preds_array = np.zeros((len(future_preds), data.shape[1]))
         future_preds_array[:, 0] = future_preds
         future_preds_transformed = scaler.inverse_transform(future_preds_array)
         future_prices = future_preds_transformed[:, 0]
         
+        # Generate future dates
         logger.info("Generating future dates...")
         future_dates = [df.index[-1] + timedelta(days=i) for i in range(1, days + 1)]
         
@@ -634,7 +675,7 @@ def predict_future_prices(df, days=30, lookback=30):
         future_dates = [datetime.fromordinal(int(d)) for d in future_dates_ordinal.flatten()]
         logger.info("Fallback Linear Regression completed.")
         return future_dates, future_preds.tolist()
-
+    
 def plot_line(df, ticker):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df.index, y=df['Close'], mode='lines', name='Close Price'))
@@ -831,6 +872,8 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(check_alerts, 'interval', minutes=5)
 scheduler.start()
 
+ 
+
 # =========================
 # 📉 Risk Analysis
 # =========================
@@ -939,12 +982,11 @@ def generate_pdf_report(holdings, watchlist, portfolio_value, risk_metrics, exch
         tmp.write(html_content.encode())
         tmp_path = tmp.name
     pdf_path = tmp_path.replace(".html", ".pdf")
-    # Note: HTML to PDF conversion requires a library like pdfkit or wkhtmltopdf, not directly supported in Streamlit Cloud
-    # Placeholder: You may need to use a local server or API service (e.g., pdfkit.from_file(tmp_path, pdf_path))
-    # For now, simulate with a download link
-    with open(tmp_path, "rb") as f:
+    HTML(tmp_path).write_pdf(pdf_path)
+    with open(pdf_path, "rb") as f:
         pdf_data = f.read()
     os.remove(tmp_path)
+    os.remove(pdf_path)
     return pdf_data
 
 # =========================
@@ -1045,20 +1087,32 @@ if "authenticated" not in st.session_state:
     st.session_state.currency = "USD"
     st.session_state.exchange = "US"
 
-# =========================
 # ✅ Verification Handler
-# =========================
 query_params = st.query_params
 if 'token' in query_params:
     token = query_params['token']
     client = connect_to_mongo()
-    success, message = verify_user(client, token)
-    if success:
-        st.session_state.show_verification_message = True
-        st.session_state.verification_message = message
+    if client:
+        success, message = verify_user(client, token)
+        if success:
+            st.session_state.show_verification_message = True
+            st.session_state.verification_message = message
+            st.session_state.authenticated = True  # Auto-login after verification
+            st.rerun()  # Refresh the UI
+        else:
+            st.error(message)
     else:
-        st.error(message)
+        st.error("Database connection failed during verification")
     st.query_params.clear()
+
+# Display verification message if set
+if st.session_state.show_verification_message:
+    st.success(st.session_state.verification_message)
+    if st.button("Proceed to Dashboard"):
+        st.session_state.show_verification_message = False
+        st.session_state.authenticated = True
+        st.rerun()
+    st.session_state.show_verification_message = False  # Reset after display
 
 # =========================
 # 📏 Sidebar
@@ -1121,7 +1175,8 @@ with st.sidebar.container():
     exchange = st.selectbox("🏛️ Stock Exchange", list(exchanges.keys()), format_func=lambda x: exchanges[x], key="exchange")
 
     # Display Current Date and Time
-    current_time = datetime.now().strftime("%I:%M %p IST on %A, %B %d, %Y")
+    from datetime import datetime
+    current_time = datetime.now().strftime("%I:%M %p IST on %A, %B %d, %Y")  # e.g., "02:16 AM IST on Tuesday, June 24, 2025"
     st.sidebar.markdown(f"🕒 Current Time: **{current_time}**", unsafe_allow_html=True)
 
     auth_mode = st.sidebar.radio("Choose Action", ["Login", "Register"], key="auth_mode")
@@ -1138,7 +1193,7 @@ with st.sidebar.container():
                 if not all([name, email, phone, age, password, confirm_password]):
                     st.sidebar.error("⚠️ All fields required")
                 elif not is_valid_email(email):
-                    st.sidebar.error("⚠️ Invalid email format (only @gmail.com supported)")
+                    st.sidebar.error("⚠️ Invalid email format")
                 elif password != confirm_password:
                     st.sidebar.error("⚠️ Passwords don't match")
                 else:
@@ -1188,6 +1243,9 @@ with st.sidebar.container():
             st.session_state.user = None
             st.session_state.show_logout_message = True
             st.rerun()
+
+import streamlit as st
+import streamlit.components.v1 as components
 
 # =========================
 # 🖥️ Main Content
@@ -1339,10 +1397,12 @@ if st.session_state.authenticated:
             else:
                 st.info("Unable to fetch portfolio data. Please check the tickers or try again later.")
             
+            # Display holdings with serial numbers
             st.markdown("### Portfolio Holdings")
             for i, item in enumerate(holdings, start=1):
                 st.markdown(f"{i}. {item['ticker']}: {item['shares']} shares")
 
+            # Input for removing stock by serial number
             remove_index = st.number_input("Enter Serial Number to Remove (1 to {})".format(len(holdings)), 
                                           min_value=1, 
                                           max_value=len(holdings) if holdings else 0, 
@@ -1350,7 +1410,7 @@ if st.session_state.authenticated:
                                           key="remove_index")
             if st.button("Remove Stock"):
                 if 1 <= remove_index <= len(holdings):
-                    removed_ticker = holdings[remove_index - 1]["ticker"]
+                    removed_ticker = holdings[remove_index - 1]["ticker"]  # Convert to 0-based index
                     holdings.pop(remove_index - 1)
                     if update_portfolio(mongo_client, st.session_state.user["_id"], holdings):
                         st.success(f"Removed {removed_ticker} from portfolio!")
@@ -1419,7 +1479,7 @@ if st.session_state.authenticated:
     with tabs[3]:
         st.header("📅 Economic Calendar")
         if st.button("Refresh Calendar"):
-            st.rerun()
+            st.rerun()  # Refresh the page to reload the widget
         st.write("Real-Time Economic Calendar provided by Investing.com. Customize via their site if needed.")
         components.html(
             """
