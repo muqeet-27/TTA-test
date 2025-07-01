@@ -1099,7 +1099,7 @@ if 'token' in query_params:
             st.session_state.show_verification_message = True
             st.session_state.verification_message = message
             st.session_state.authenticated = True  # Auto-login after verification
-            st.rerun()  # Refresh the UI
+            st.rerun()  # Refresh the UI to reflect the new state
         else:
             st.error(message)
     else:
@@ -1111,10 +1111,9 @@ if st.session_state.show_verification_message:
     st.success(st.session_state.verification_message)
     if st.button("Proceed to Dashboard"):
         st.session_state.show_verification_message = False
-        st.session_state.authenticated = True
-        st.rerun()
-    st.session_state.show_verification_message = False  # Reset after display
-
+        st.rerun()  # Transition to the main app
+    # Reset the flag after display to avoid persistent display
+    st.session_state.show_verification_message = False
 # =========================
 # 📏 Sidebar
 # =========================
@@ -1253,7 +1252,10 @@ import streamlit.components.v1 as components
 # =========================
 if st.session_state.show_verification_message:
     st.success(st.session_state.verification_message)
-    st.session_state.show_verification_message = False
+    if st.button("Proceed to Dashboard"):
+        st.session_state.show_verification_message = False
+        st.session_state.authenticated = True
+        st.rerun()
 
 if st.session_state.authenticated:
     st.title("📊 TradeTrend Analyzer")
