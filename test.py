@@ -309,8 +309,17 @@ def ticker_for_alpha_vantage(ticker, exchange):
     return ticker
 
 def send_verification_email(email, token):
-    app_url = os.getenv("APP_URL", "https://your-app-name.streamlit.app")
+    # Dynamically determine APP_URL with fallback
+    app_url = os.getenv("APP_URL")
+    if not app_url:
+        logger.warning("APP_URL not set in environment. Using default deployed URL.")
+        app_url = "https://testpy-gkxkqcrusbppd73mddgjjq.streamlit.app"
+    elif "localhost" in app_url.lower():
+        logger.warning("APP_URL contains localhost. Overriding with deployed URL.")
+        app_url = "https://testpy-gkxkqcrusbppd73mddgjjq.streamlit.app"
     verification_link = f"{app_url}/?token={token}"
+    logger.info(f"Generated verification link: {verification_link}")
+
     sender_email = os.getenv("SMTP_USER")
     sender_password = os.getenv("SMTP_PASS")
     smtp_server = os.getenv("SMTP_HOST")
@@ -332,15 +341,7 @@ The link will expire in 24 hours.""")
             <body>
                 <h2>Welcome to TradeTrend Analyzer!</h2>
                 <p>Please verify your email address by clicking the button below:</p>
-                <a href="{verification_link}" style="
-                    background-color: #3b82f6;
-                    color: white;
-                    padding: 10px 20px;
-                    text-decoration: none;
-                    border-radius: 5px;
-                    display: inline-block;
-                    margin: 10px 0;
-                ">Verify Email</a>
+                <a href="{verification_link}" style="background-color: #3b82f6; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 10px 0;">Verify Email</a>
                 <p>Or copy this link to your browser: {verification_link}</p>
                 <p><small>The link will expire in 24 hours.</small></p>
             </body>
@@ -350,7 +351,7 @@ The link will expire in 24 hours.""")
             server.starttls()
             server.login(sender_email, sender_password)
             server.send_message(msg)
-            logger.info(f"Email sent to {email} via SMTP")
+            logger.info(f"Email sent to {email} via SMTP with link: {verification_link}")
             return True, "Email sent via SMTP"
     except Exception as e:
         logger.error(f"SMTP error: {str(e)}")
