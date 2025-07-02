@@ -445,10 +445,12 @@ def verify_user(client, token):
     db = client["UserDB"]
     user = db.users.find_one({"verification_token": token})
     if not user:
+        logger.error(f"Invalid token: {token}")
         return False, "Invalid token"
     token_age = datetime.now() - user.get("token_created", datetime.now())
     if token_age > timedelta(hours=24):
         db.users.delete_one({"_id": user["_id"]})
+        logger.warning(f"Token expired for user {user.get('_id')}")
         return False, "Token expired"
     try:
         db.users.update_one(
@@ -456,9 +458,10 @@ def verify_user(client, token):
             {"$set": {"verified": True}, 
              "$unset": {"verification_token": "", "token_created": ""}}
         )
+        logger.info(f"User {user.get('_id')} verified successfully")
         return True, "Email verified!"
     except Exception as e:
-        logger.error(f"Verification error: {str(e)}")
+        logger.error(f"Verification update error: {str(e)}")
         return False, "Verification error"
 
 @rate_limit(max_calls=5, time_frame=300)
@@ -1096,24 +1099,29 @@ if 'token' in query_params:
     if client:
         success, message = verify_user(client, token)
         if success:
-            st.session_state.show_verification_message = True
-            st.session_state.verification_message = message
-            st.session_state.authenticated = True  # Auto-login after verification
-            st.rerun()  # Refresh the UI to reflect the new state
+            # Fetch the verified user to ensure _id is available
+            db = client["UserDB"]
+            user = db.users.find_one({"verification_token": token})
+            if user and "_id" in user:
+                st.session_state.authenticated = True
+                st.session_state.user = user  # Set the full user object
+                st.session_state.show_verification_message = True
+                st.session_state.verification_message = message
+            else:
+                st.error("User data not found after verification")
         else:
             st.error(message)
-    else:
-        st.error("Database connection failed during verification")
-    st.query_params.clear()
+        st.query_params.clear()
+        st.rerun()  # Refresh to apply changes
 
 # Display verification message if set
 if st.session_state.show_verification_message:
     st.success(st.session_state.verification_message)
     if st.button("Proceed to Dashboard"):
         st.session_state.show_verification_message = False
-        st.rerun()  # Transition to the main app
-    # Reset the flag after display to avoid persistent display
-    st.session_state.show_verification_message = False
+        st.rerun()  # Transition to authenticated state
+    st.session_state.show_verification_message = False  # Reset after display
+    
 # =========================
 # 📏 Sidebar
 # =========================
@@ -1369,7 +1377,11 @@ if st.session_state.authenticated:
                         st.download_button(f"📥 Download {base_ticker} Data", compressed_csv, f"{base_ticker}_data.csv.gz", "application/gzip")
 
     with tabs[1]:
-        st.header("💼 Portfolio")
+     st.header("💼 Portfolio")
+    if not st.session_state.authenticated or not st.session_state.user or "_id" not in st.session_state.user:
+        st.error("⚠️ Please log in to access your portfolio.")
+    else:
+        logger.info(f"Accessing portfolio for user: {st.session_state.user.get('_id')}")
         holdings = get_portfolio(mongo_client, st.session_state.user["_id"])
         with st.container():
             col1, col2 = st.columns([2, 1])
@@ -1413,7 +1425,7 @@ if st.session_state.authenticated:
                                           key="remove_index")
             if st.button("Remove Stock"):
                 if 1 <= remove_index <= len(holdings):
-                    removed_ticker = holdings[remove_index - 1]["ticker"]  # Convert to 0-based index
+                    removed_ticker = holdings[remove_index - 1]["ticker"]
                     holdings.pop(remove_index - 1)
                     if update_portfolio(mongo_client, st.session_state.user["_id"], holdings):
                         st.success(f"Removed {removed_ticker} from portfolio!")
